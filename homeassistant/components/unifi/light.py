@@ -1,13 +1,10 @@
-"""Light platform for UniFi Network integration.
-
-Support for controlling LED status lights on UniFi devices.
-"""
+"""Light platform for UniFi Network integration."""
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from aiounifi.interfaces.api_handlers import APIHandler, ItemEvent
 from aiounifi.interfaces.devices import Devices
@@ -55,20 +52,14 @@ async def async_device_led_control_fn(
     """Control device LED."""
     device = hub.api.devices[obj_id]
 
-    # Determine the status
-    if "turn_on" in kwargs:
-        status = "on" if kwargs["turn_on"] else "off"
-    else:
-        status = device.led_override or "on"
+    status = "on" if kwargs.get("turn_on", device.led_override == "on") else "off"
 
-    # Get brightness (0-255 -> 0-100 for UniFi)
     brightness = None
     if ATTR_BRIGHTNESS in kwargs:
         brightness = int((kwargs[ATTR_BRIGHTNESS] / 255) * 100)
     elif device.led_override_color_brightness is not None:
         brightness = device.led_override_color_brightness
 
-    # Get RGB color (convert to hex string)
     color = None
     if ATTR_RGB_COLOR in kwargs:
         rgb = kwargs[ATTR_RGB_COLOR]
@@ -100,12 +91,13 @@ ENTITY_DESCRIPTIONS: tuple[UnifiLightEntityDescription, ...] = (
     UnifiLightEntityDescription[Devices, Device](
         key="LED control",
         translation_key="led_control",
+        allowed_fn=lambda hub, obj_id: True,
         api_handler_fn=lambda api: api.devices,
         available_fn=async_device_available_fn,
         control_fn=async_device_led_control_fn,
         device_info_fn=async_device_device_info_fn,
         is_on_fn=async_device_led_is_on_fn,
-        name_fn=lambda device: f"{device.name} LED",
+        name_fn=lambda device: "LED",
         object_fn=lambda api, obj_id: api.devices[obj_id],
         supported_fn=async_device_led_supported_fn,
         unique_id_fn=lambda hub, obj_id: f"led-{obj_id}",
@@ -168,39 +160,29 @@ class UnifiLightEntity[HandlerT: APIHandler, ApiItemT: ApiItem](
         description = self.entity_description
         device_obj = description.object_fn(self.api, self._obj_id)
 
-        # Cast to Device for type checking
-        device: Device = device_obj  # type: ignore[assignment]
+        device = cast(Device, device_obj)
 
-        # Update on/off state
         self._attr_is_on = description.is_on_fn(self.hub, device_obj)
+        self._attr_color_mode = ColorMode.RGB
 
-        # Update brightness (UniFi uses 0-100, HA uses 0-255)
         if device.led_override_color_brightness is not None:
             self._attr_brightness = int(
                 (device.led_override_color_brightness / 100) * 255
             )
+        elif self._attr_is_on:
+            self._attr_brightness = 255
         else:
-            self._attr_brightness = 255 if self._attr_is_on else 0
+            self._attr_brightness = 0
 
-        # Update RGB color
         if device.led_override_color:
-            # Convert hex color to RGB tuple
             color_hex = device.led_override_color.lstrip("#")
             if len(color_hex) == 6:
                 try:
-                    rgb_tuple = tuple(int(color_hex[i : i + 2], 16) for i in (0, 2, 4))
-                    # Ensure it's exactly 3 elements for RGB
-                    if len(rgb_tuple) == 3:
-                        self._attr_rgb_color = (
-                            rgb_tuple[0],
-                            rgb_tuple[1],
-                            rgb_tuple[2],
-                        )
-                    else:
-                        self._attr_rgb_color = (255, 255, 255)  # Default to white
+                    rgb_values = [int(color_hex[i : i + 2], 16) for i in (0, 2, 4)]
+                    self._attr_rgb_color = (rgb_values[0], rgb_values[1], rgb_values[2])
                 except ValueError:
-                    self._attr_rgb_color = (255, 255, 255)  # Default to white
+                    self._attr_rgb_color = (255, 255, 255)
             else:
-                self._attr_rgb_color = (255, 255, 255)  # Default to white
+                self._attr_rgb_color = (255, 255, 255)
         else:
-            self._attr_rgb_color = (255, 255, 255)  # Default to white
+            self._attr_rgb_color = (255, 255, 255)
